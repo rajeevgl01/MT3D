@@ -288,11 +288,11 @@ class Trainer(nn.Module):
 		torch.cuda.empty_cache()
 
 		self.save_dir = Path(
-			f"/scratch/unath/gsgen/checkpoints/{prompt}/{day_timestamp}/{hms_timestamp}")
+			./{prompt}/{day_timestamp}/{hms_timestamp}")
 		if not self.save_dir.exists():
 			self.save_dir.mkdir(parents=True, exist_ok=True)
 		self.log_dir = Path(
-			f"/scratch/unath/gsgen/logs/{prompt}/{day_timestamp}/{hms_timestamp}")
+			./logs/{prompt}/{day_timestamp}/{hms_timestamp}")
 		if not self.log_dir.exists():
 			self.log_dir.mkdir(parents=True, exist_ok=True)
 		self.eval_dir = self.save_dir / "eval"
@@ -312,7 +312,7 @@ class Trainer(nn.Module):
 				config=to_primitive(cfg),
 				sync_tensorboard=True,
 				# magic=True,
-				dir="/scratch/unath/gsgen/wandb",
+				dir="./wandb",
 				save_code=True,
 				group=overrided_group,
 				notes=notes,

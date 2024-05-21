@@ -1,30 +1,4 @@
-# GSGEN: Text-to-3D using Gaussian Splatting
-
-This repository contains the official implementation of [GSGEN: Text-to-3D using Gaussian Splattng](https://gsgen3d.github.io). 
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1kg8OOnVXSnnEIk9IYBg55ZqkPfMh14xf?usp=sharing)
-
-
-### [Paper](https://arxiv.org/abs/2309.16585) | [Project Page](https://gsgen3d.github.io/)
-
-### Video results
-
-
-https://github.com/gsgen3d/gsgen/assets/44675551/6f3c0df7-e3d1-4a37-a617-8a35ade2d72d
-
-
-https://github.com/gsgen3d/gsgen/assets/44675551/64e5662f-e8d5-4380-a2ac-540d6789f65b
-
-
-
-https://github.com/gsgen3d/gsgen/assets/44675551/c9c25857-3b5c-4338-adb0-e8e0910c8260
-
-
-
-https://github.com/gsgen3d/gsgen/assets/44675551/25e3a94e-5a3b-4e14-bdd5-bfbf44fc2b82
-
-
-
+# GeometricDreamer: Geometry based Text-to-3D Generation using Gaussian Splatting
 
 ### Instructions:
 1. Install the requirements:
@@ -81,30 +55,3 @@ python utils/export.py <your_ckpt> --type splat
 python utils/export.py <your_ckpt> --type mesh --batch_size 65536 --reso 256 --K 200 --thresh 0.1
 ```
 where the <your_ckpt> can be the path to the .pt checkpoint file or, more conveniently, can be the id for the run (the display name of the run in wandb, e.g. `0|213630|2023-10-11|a_high_quality_photo_of_a_corgi`). The exported files are reside in the `exports/<export-type>`.
-
-#### If you encounter troubles in exporting in colab, using `-m` will work:
-```bash
-python -m utils.export <your_ckpt> --type <export_type>
-```
-
-## Updates
-- [2023-10-08] Now support exports to `.ply` and `.splat` files. Mesh exporting are coming soon.
-- [2023-10-13] Now support Shap-E initialize, try it with `init.type="shap_e"`
-  
-### TODO
-- [ ] Support full mesh export. (Coming soon)  
-- [ ] Support [VSD loss](https://github.com/thu-ml/prolificdreamer). (The VSD code is already done, further tuning is on the way)
-- [ ] Support more guidance, e.g. [zero123](https://zero123.cs.columbia.edu/), [make-it-3d](https://github.com/junshutang/Make-It-3D), [ControlNet Openpose](https://github.com/mhussar/Controlnet3DCharacterRotation/tree/main), etc.
-
-
-## Acknowledgement
-This code base is built upon the following awesome open-source projects:
-- [Stable DreamFusion](https://github.com/ashawkey/stable-dreamfusion)
-- [threestudio](https://github.com/threestudio-project/threestudio)
-- [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/)
-- [splat](https://github.com/antimatter15/splat)
-- [Point-E](https://github.com/openai/point-e/issues)
-- [Shap-E](https://github.com/openai/shap-e)
-- [Make-it-3D](https://github.com/junshutang/Make-It-3D)
-
-Thank the authors for their remarkable job !

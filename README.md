@@ -1,4 +1,4 @@
-# GeometricDreamer: Geometry based Text-to-3D Generation using Gaussian Splatting
+# MomentDreamer: Geometry based Text-to-3D Generation using Gaussian Splatting
 
 ### Instructions:
 1. Install the requirements:

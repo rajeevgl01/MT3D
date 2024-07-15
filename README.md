@@ -18,3 +18,7 @@ You can specify a different prompt for Point-E:
 ```python
 python main.py --config-name=base prompt.prompt="<prompt>" init.prompt="<point-e prompt>"
 ```
+4. Stage 2 Training
+```python
+python main.py --config-name=base prompt.prompt="<prompt>" init.prompt="<point-e prompt>" auxiliary.enabled=false renderer.densify.enabled=true renderer.prune.enabled=true
+```

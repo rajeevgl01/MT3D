@@ -65,7 +65,7 @@ from torch.utils.tensorboard import SummaryWriter
 from rich.console import Console
 from torchmetrics import PearsonCorrCoef
 from diffusers.utils import load_image
-from resnet_gm import ResNet34
+# from resnet_gm import ResNet34
 import objaverse
 import bpy
 from mathutils import Vector
@@ -160,13 +160,10 @@ class Trainer(nn.Module):
 					coord = Vector(coord)
 					if not ignore_matrix:
 						coord = obj.matrix_world @ coord
-					bbox_min = tuple(min(x, y)
-									 for x, y in zip(bbox_min, coord))
-					bbox_max = tuple(max(x, y)
-									 for x, y in zip(bbox_max, coord))
+					bbox_min = tuple(min(x, y) for x, y in zip(bbox_min, coord))
+					bbox_max = tuple(max(x, y) for x, y in zip(bbox_max, coord))
 			if not found:
-				raise RuntimeError(
-					"no objects in scene to compute bounding box for")
+				raise RuntimeError("no objects in scene to compute bounding box for")
 			return Vector(bbox_min), Vector(bbox_max)
 
 		def scene_root_objects():
@@ -176,21 +173,62 @@ class Trainer(nn.Module):
 
 		def scene_meshes():
 			for obj in bpy.context.scene.objects.values():
-				if isinstance(obj.data, (bpy.types.Mesh)):
+				if isinstance(obj.data, bpy.types.Mesh):
 					yield obj
 
-		def normalize_scene():
+		def normalize_scene(target_size=2.0):
 			bbox_min, bbox_max = scene_bbox()
-			scale = 1 / max(bbox_max - bbox_min)
+			scale = target_size / max(bbox_max - bbox_min)
 			for obj in scene_root_objects():
 				obj.scale = obj.scale * scale
-			# Apply scale to matrix_world.
 			bpy.context.view_layer.update()
 			bbox_min, bbox_max = scene_bbox()
 			offset = -(bbox_min + bbox_max) / 2
 			for obj in scene_root_objects():
 				obj.matrix_world.translation += offset
-			bpy.ops.object.select_all(action="DESELECT")
+			bpy.context.view_layer.update()
+
+		def adjust_camera(distance=2.5):
+			camera = bpy.context.scene.camera
+			bbox_min, bbox_max = scene_bbox()
+			scene_center = (bbox_min + bbox_max) / 2
+			bbox_size = max(bbox_max - bbox_min)
+			camera.location = scene_center + Vector((0, -distance, distance))
+			camera.data.lens = 50
+			bpy.context.view_layer.update()
+			bpy.context.scene.camera.rotation_euler = (math.pi / 4, 0, math.pi)
+		
+		def render_object(cfg):
+			objects = objaverse.load_objects(uids=[cfg.guidance.control_obj_uid])
+			bpy.ops.import_scene.gltf(filepath=list(objects.values())[0], merge_vertices=True)
+			bpy.data.objects.remove(bpy.data.objects["Cube"], do_unlink=True)
+			normalize_scene()
+			adjust_camera()
+			for key, obj in bpy.data.objects.items():
+				try:
+					for material in obj.data.materials:
+						if material.use_nodes:
+							for node in material.node_tree.nodes:
+								if node.type == 'TEX_IMAGE':
+									texture_image = node.image
+									if texture_image:
+										texture_image.filepath_raw = key + '.png'
+										texture_image.file_format = 'PNG'
+										texture_image.save()
+				except:
+					pass
+
+			bpy.ops.wm.obj_export(filepath=f"{cfg.guidance.control_obj_uid}.obj", export_materials=True, path_mode='COPY')
+
+			device = torch.device(cfg.device)
+			verts, faces, aux = load_obj(f"{cfg.guidance.control_obj_uid}.obj", create_texture_atlas=True, device=device)
+			mesh = Meshes(verts=[verts.to(device)], faces=[faces.verts_idx.to(device)], textures=TexturesAtlas(atlas=[aux.texture_atlas.to(device)]))
+			return mesh
+		
+		mesh = render_object(cfg)
+
+		# mesh = get_mesh_from_pointe()
+		self.control_obj_mesh = join_meshes_as_batch([mesh] * cfg.batch_size)
 
 		if self.mode == "image_to_3d":
 			assert "image" in self.cfg, "image should be provided in image_to_3d mode"
@@ -235,37 +273,6 @@ class Trainer(nn.Module):
 			cfg.renderer, initial_values=initial_values
 		).to(cfg.device)
 		
-		# def get_mesh_from_pointe():
-		# 	pcd = for_mesh
-		# 	xyz, rgb = pcd[:, :3], pcd[:, 3:]
-		# 	import io
-		# 	from typing import BinaryIO
-		# 	PointCloud(xyz, {"RGB": rgb}).save("pointe_mesh.npz")
-
-		objects = objaverse.load_objects(
-			uids=[cfg.guidance.control_obj_uid])
-		bpy.ops.import_scene.gltf(filepath=list(
-			objects.values())[0], merge_vertices=True)
-		bpy.data.objects.remove(bpy.data.objects["Cube"], do_unlink=True)
-		normalize_scene()
-		bpy.ops.wm.obj_export(filepath=f"{cfg.guidance.control_obj_uid}.obj")
-
-		device = torch.device(cfg.device)
-		verts, faces, aux = load_obj(
-			f"{cfg.guidance.control_obj_uid}.obj", create_texture_atlas=True, device=device)
-		# verts, faces, aux = load_obj(
-		# 	"texture.obj", create_texture_atlas=True, device=device)
-		mesh = Meshes(verts=[verts.to(device)],
-						faces=[faces.verts_idx.to(device)],
-						textures=TexturesAtlas(
-							atlas=[aux.texture_atlas.to(device)])
-						)
-
-		# mesh = get_mesh_from_pointe()
-		self.control_obj_mesh = join_meshes_as_batch([mesh] * cfg.batch_size)
-
-		# self.visualizieImages()
-		# exit()
 		self.renderer.setup_lr(cfg.lr)
 		self.renderer.set_optimizer(cfg.optimizer)
 
@@ -288,11 +295,11 @@ class Trainer(nn.Module):
 		torch.cuda.empty_cache()
 
 		self.save_dir = Path(
-			./{prompt}/{day_timestamp}/{hms_timestamp}")
+			f"/scratch/rgoel15/gsgen/checkpoints/{prompt}/{day_timestamp}/{hms_timestamp}")
 		if not self.save_dir.exists():
 			self.save_dir.mkdir(parents=True, exist_ok=True)
 		self.log_dir = Path(
-			./logs/{prompt}/{day_timestamp}/{hms_timestamp}")
+			f"/scratch/rgoel15/gsgen/logs/{prompt}/{day_timestamp}/{hms_timestamp}")
 		if not self.log_dir.exists():
 			self.log_dir.mkdir(parents=True, exist_ok=True)
 		self.eval_dir = self.save_dir / "eval"
@@ -307,12 +314,12 @@ class Trainer(nn.Module):
 
 		if cfg.wandb:
 			wandb.init(
-				project="gsgen-2nd-stage",
+				project="moment_dreamer_rebuttal",
 				name=uid,
 				config=to_primitive(cfg),
 				sync_tensorboard=True,
 				# magic=True,
-				dir="./wandb",
+				dir="/scratch/rgoel15/gsgen/wandb",
 				save_code=True,
 				group=overrided_group,
 				notes=notes,
@@ -395,23 +402,17 @@ class Trainer(nn.Module):
 
 		images, fragments = renderer(mesh.to(cfg.device))
 
-		# uncomment from 375 to 380 and comment from 381 to 390 fro dgm
-		# images = torch.stack([image for image in images])
-		# _, gms = self.gm_model(images[..., :3].permute(0, 3, 1, 2))
-		# gms = gms.repeat(1,3,1,1)
-		# gms = gms * 255.
-		# gms = gms.permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
-		# return gms
 		depth = fragments.zbuf
 		depth[depth < 0] = 0
 
 		depth_min = depth.min()
 		depth_max = depth.max()
-		#normalized_depth = (depth - depth_min) / (depth_max - depth_min)
 		normalized_depth = (depth - depth_min) / (depth_max - depth_min)
 
 		three_channel_depth = normalized_depth.repeat(1, 1, 1, 3)
-		return list(map(functional.to_pil_image, three_channel_depth.permute(0, 3, 1, 2)))
+		images = images.permute(0, 3, 1, 2)[:, :3, :, :]
+
+		return images, three_channel_depth.permute(0, 3, 1, 2)
 
 	def get_mesh_from_gaussians(self, cfg):
 		params = self.renderer.get_params_for_save()
@@ -606,10 +607,10 @@ class Trainer(nn.Module):
 		batch = next(self.loader)
 		out = self.renderer(batch, self.cfg.use_bg, self.cfg.rgb_only)
 		if self.cfg.guidance.controlled:
-			self.control_image = self.get_control_image_from_mesh(
+			self.render_image, self.control_image = self.get_control_image_from_mesh(
 				self.cfg, batch, self.control_obj_mesh)
 		else:
-			self.control_image = None
+			self.render_image, self.control_image = None, None
 		prompt_embeddings = self.prompt_processor()
 		guidance_out = self.guidance(
 			rgb=out["rgb"],

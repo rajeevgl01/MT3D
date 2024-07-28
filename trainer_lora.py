@@ -42,6 +42,7 @@ from pytorch3d.renderer import (
 	MeshRendererWithFragments,
 	MeshRasterizer,
 	SoftPhongShader,
+	HardPhongShader,
 	TexturesAtlas
 )
 from utils.transforms import qvec2rotmat_batched
@@ -65,18 +66,18 @@ from torch.utils.tensorboard import SummaryWriter
 from rich.console import Console
 from torchmetrics import PearsonCorrCoef
 from diffusers.utils import load_image
-# from resnet_gm import ResNet34
+from guidance.resnet_gm import ResNet34
+from torchvision import transforms
 import objaverse
 import bpy
 from mathutils import Vector
-import mcubes
+# import mcubes
 from point_e.models.download import load_checkpoint
 from point_e.models.configs import MODEL_CONFIGS, model_from_config
 from point_e.util.pc_to_mesh import marching_cubes_mesh
 from point_e.util.plotting import plot_point_cloud
 from point_e.util.point_cloud import PointCloud
 import matplotlib.pyplot as plt
-import trimesh
 
 console = Console()
 
@@ -150,6 +151,13 @@ class Trainer(nn.Module):
 			)
 		)
 
+		self.dgm_model = ResNet34().to(device=cfg.device)
+		state_dict = torch.load('./res34_model_best.pth.tar')['state_dict']
+		state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+		self.dgm_model.load_state_dict(state_dict)
+
+		self.dgm_model.eval()
+		
 		def scene_bbox(single_obj=None, ignore_matrix=False):
 			bbox_min = (math.inf,) * 3
 			bbox_max = (-math.inf,) * 3
@@ -217,7 +225,7 @@ class Trainer(nn.Module):
 										texture_image.save()
 				except:
 					pass
-
+			# bpy.ops.export_scene.obj(filepath=f"{cfg.guidance.control_obj_uid}.obj", use_materials=True, path_mode='COPY')
 			bpy.ops.wm.obj_export(filepath=f"{cfg.guidance.control_obj_uid}.obj", export_materials=True, path_mode='COPY')
 
 			device = torch.device(cfg.device)
@@ -265,10 +273,11 @@ class Trainer(nn.Module):
 			self.image_loss_fn = get_image_loss(0.2, "l2")
 		elif self.mode == "text_to_3d":
 			if cfg.init.type == "point_e":
-				initial_values, for_mesh = initialize(cfg.init)
+				initial_values = initialize(cfg.init, mesh_path=None)
+			elif cfg.init.type == "mesh":
+				initial_values = initialize(cfg.init, mesh_path=f"{cfg.guidance.control_obj_uid}.obj")
 			else:
-				initial_values = initialize(cfg.init)
-		# initial_values = base_initialize(cfg.init)
+				initial_values = initialize(cfg.init, mesh_path=None)
 		self.renderer = GaussianSplattingRenderer(
 			cfg.renderer, initial_values=initial_values
 		).to(cfg.device)
@@ -295,11 +304,11 @@ class Trainer(nn.Module):
 		torch.cuda.empty_cache()
 
 		self.save_dir = Path(
-			f"/scratch/rgoel15/gsgen/checkpoints/{prompt}/{day_timestamp}/{hms_timestamp}")
+			f"./checkpoints/{prompt}/{day_timestamp}/{hms_timestamp}")
 		if not self.save_dir.exists():
 			self.save_dir.mkdir(parents=True, exist_ok=True)
 		self.log_dir = Path(
-			f"/scratch/rgoel15/gsgen/logs/{prompt}/{day_timestamp}/{hms_timestamp}")
+			f"./logs/{prompt}/{day_timestamp}/{hms_timestamp}")
 		if not self.log_dir.exists():
 			self.log_dir.mkdir(parents=True, exist_ok=True)
 		self.eval_dir = self.save_dir / "eval"
@@ -314,12 +323,12 @@ class Trainer(nn.Module):
 
 		if cfg.wandb:
 			wandb.init(
-				project="moment_dreamer_rebuttal",
+				project="experiments",
 				name=uid,
 				config=to_primitive(cfg),
 				sync_tensorboard=True,
 				# magic=True,
-				dir="/scratch/rgoel15/gsgen/wandb",
+				dir=".wandb",
 				save_code=True,
 				group=overrided_group,
 				notes=notes,
@@ -368,7 +377,7 @@ class Trainer(nn.Module):
 									  elev=batch["elevation"].to(
 										  torch.float32),
 									  azim=batch["azimuth"].to(torch.float32),
-									  up=((0, 0, 1),), degrees=False, device=cfg.device)
+									  degrees=False, device=cfg.device)
 
 		cameras = FoVPerspectiveCameras(device=cfg.device,
 										R=R, T=T, degrees=False,
@@ -394,7 +403,7 @@ class Trainer(nn.Module):
 				cameras=cameras,
 				raster_settings=raster_settings
 			),
-			shader=SoftPhongShader(
+			shader=HardPhongShader(
 				device=cfg.device,
 				cameras=cameras,
 				lights=lights)
@@ -411,127 +420,8 @@ class Trainer(nn.Module):
 
 		three_channel_depth = normalized_depth.repeat(1, 1, 1, 3)
 		images = images.permute(0, 3, 1, 2)[:, :3, :, :]
-
+		# return images, list(map(functional.to_pil_image, three_channel_depth.permute(0, 3, 1, 2)))
 		return images, three_channel_depth.permute(0, 3, 1, 2)
-
-	def get_mesh_from_gaussians(self, cfg):
-		params = self.renderer.get_params_for_save()
-
-		density_val_grid, L = get_density_val_grid_from_ckpt(
-			params,
-			reso=256,
-			K=200,
-			batch_size=65536,
-		)
-		density_val_grid = density_val_grid.cpu().numpy()
-
-		vertices, triangles = marching_cubes(density_val_grid, L, 256, 0.01)
-		return torch.from_numpy(vertices).cuda(), torch.from_numpy(triangles.astype(np.int64)).cuda()
-
-	def vectorized_triangle_area(self, vertices):
-		# vertices is expected to be a tensor of shape [n, 3, 3] where n is the number of triangles
-		A = vertices[:, 0, :]
-		B = vertices[:, 1, :]
-		C = vertices[:, 2, :]
-
-		AB = B - A
-		AC = C - A
-		cross_product = torch.cross(AB, AC, dim=1)
-		area = 0.5 * torch.norm(cross_product, dim=1)
-		return area
-
-	def vectorized_geometric_moment3D(self, verts, faces, p, q, r):
-		# Shape [n, 3, 3], n is the number of triangles
-		face_vertices = verts[faces]
-
-		# Calculate centroids of the triangles
-		centroids = face_vertices.mean(dim=1)  # Shape [n, 3]
-		x_ijk, y_ijk, z_ijk = centroids[:, 0], centroids[:, 1], centroids[:, 2]
-
-		# Calculate areas of the triangles
-		areas = self.vectorized_triangle_area(face_vertices)  # Shape [n]
-
-		# Calculate moments using centroids and areas
-		moments = (x_ijk ** p) * (y_ijk ** q) * (z_ijk ** r) * areas  # Element-wise multiplication for moments
-
-		# Sum all moments to get the total geometric moment
-		m_pqr = moments.sum()
-
-		return m_pqr
-
-	def vectorized_central_Gaussian_geometric_moment3D(self, verts, faces, sigma, p, q, r):
-		face_vertices = verts[faces]  # Shape [n, 3, 3]
-
-		# Compute necessary geometric moments for centroids
-		m_000 = self.vectorized_geometric_moment3D(verts, faces, 0, 0, 0)
-		m_100 = self.vectorized_geometric_moment3D(verts, faces, 1, 0, 0)
-		m_010 = self.vectorized_geometric_moment3D(verts, faces, 0, 1, 0)
-		m_001 = self.vectorized_geometric_moment3D(verts, faces, 0, 0, 1)
-
-		# Calculate centroids
-		x_c = m_100 / m_000
-		y_c = m_010 / m_000
-		z_c = m_001 / m_000
-
-		# Calculate areas of each triangle
-		areas = self.vectorized_triangle_area(face_vertices)
-		total_area = areas.sum()
-
-		# Normalize sigma based on the total area or another scale-related metric
-		scale_factor = torch.sqrt(total_area)
-		sigma_normalized = sigma * scale_factor
-
-		# Calculate centroids of each triangle
-		centroids = face_vertices.mean(dim=1)  # Shape [n, 3]
-
-		# Gaussian weights calculation
-		x, y, z = centroids[:, 0], centroids[:, 1], centroids[:, 2]
-		x = x - x_c
-		y = y - y_c
-		z = z - z_c
-
-		gaussian_weights = (x / sigma_normalized)**p * (y / sigma_normalized)**q * (
-			z / sigma_normalized)**r * torch.exp(-(x**2 + y**2 + z**2) / (2 * sigma_normalized**2))
-		U_pqr = torch.sum(gaussian_weights * areas)
-
-		V_pqr = U_pqr / m_000
-
-		return V_pqr
-
-	def compute_3dgm(self, verticies, faces):
-		V_200 = self.vectorized_central_Gaussian_geometric_moment3D(
-			verticies, faces, 0.3, 2, 0, 0)
-		V_020 = self.vectorized_central_Gaussian_geometric_moment3D(
-			verticies, faces, 0.3, 0, 2, 0)
-		V_002 = self.vectorized_central_Gaussian_geometric_moment3D(
-			verticies, faces, 0.3, 0, 0, 2)
-		V_011 = self.vectorized_central_Gaussian_geometric_moment3D(
-			verticies, faces, 0.3, 0, 1, 1)
-		V_101 = self.vectorized_central_Gaussian_geometric_moment3D(
-			verticies, faces, 0.3, 1, 0, 1)
-		V_110 = self.vectorized_central_Gaussian_geometric_moment3D(
-			verticies, faces, 0.3, 1, 1, 0)
-		I1 = V_200 + V_020 + V_002
-		I3 = V_200**3 + V_020**3 + V_002**3 + 3*V_200*V_110**2 + 3*V_200*V_101**2 + 3*V_020 * \
-			V_011**2 + 3*V_020*V_110**2 + 3*V_002*V_101**2 + \
-			3*V_002*V_011**2 + 6*V_110*V_101*V_011
-		return I1
-
-	def dgm_loss_step(self):
-		verticies, faces = self.get_mesh_from_gaussians(self.cfg)
-		gt_mesh = self.control_obj_mesh[0]
-
-		# Compute 3DGM for intermediate and ground truth meshes
-		intermediate_3dgm = self.compute_3dgm(verticies, faces)
-		gt_3dgm = self.compute_3dgm(
-			gt_mesh.verts_packed(), gt_mesh.faces_packed())
-
-		torch.set_printoptions(precision=10)
-		# Compute MSE loss between 3DGM values
-		mse_loss = nn.MSELoss()
-		print(mse_loss(intermediate_3dgm, gt_3dgm))
-		loss = self.cfg.loss.dgm * mse_loss(intermediate_3dgm, gt_3dgm)
-		return loss
 
 	@property
 	def optimizer(self):
@@ -568,6 +458,8 @@ class Trainer(nn.Module):
 			"cfg": cfg,
 			"step": self.step,
 		}
+		self.guidance.pipe_lora.save_pretrained(self.save_dir / "ckpts"/ "lora_weights")
+
 		save_dir = self.save_dir / "ckpts"
 		if not save_dir.exists():
 			save_dir.mkdir(parents=True, exist_ok=True)
@@ -605,6 +497,7 @@ class Trainer(nn.Module):
 				self.cfg, batch, self.control_obj_mesh)
 		else:
 			self.render_image, self.control_image = None, None
+		
 		prompt_embeddings = self.prompt_processor()
 		guidance_out = self.guidance(
 			rgb=out["rgb"],
@@ -615,10 +508,26 @@ class Trainer(nn.Module):
 			camera_distance=batch["camera_distance"],
 			c2w=batch["c2w"],
 			rgb_as_latents=False,
+			geo_cond=None
 		)
 
 		if self.step % self.cfg.loss.dgm_step == 0:
-			loss = self.dgm_loss_step()
+			with torch.cuda.amp.autocast(dtype=torch.float16):
+				image_transform = transforms.Compose([
+						transforms.Resize(256, antialias=True),
+						transforms.CenterCrop(256),
+						transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+					])
+				transform = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+				image = image_transform(out["rgb"].permute(0, 3, 1, 2))
+				render_image = transform(self.render_image)
+				# image = transform(img)
+				_, image_gm = self.dgm_model(image.to(device=self.cfg.device))
+				_, render_image_gm = self.dgm_model(render_image.to(device=self.cfg.device))
+
+			mse = nn.MSELoss()
+			dgm_loss = mse(image_gm, render_image_gm)
+			loss = self.cfg.loss.dgm * dgm_loss
 			self.writer.add_scalar("loss/dgm", loss, self.step)
 		else:
 			loss = 0.0
@@ -805,7 +714,7 @@ class Trainer(nn.Module):
 	def auxiliary_loss_step(self):
 		loss = self.renderer.auxiliary_loss(self.step, self.writer)
 		if loss.requires_grad:
-			loss.backward()
+			loss.backward()	
 
 	@torch.no_grad()
 	def eval_image_step(self):

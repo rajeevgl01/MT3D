@@ -25,6 +25,8 @@ from .stable_diffusion_vsd import StableDiffusionVSDGuidance
 from .deep_floyd import DeepFloydGuidance
 from .point_e import PointEGuidance
 from .make_it_3d import MakeIt3DGuidance
+from .control_lora import ControlLoRA
+from .controlnet_lora import StableDiffusionGuidance as controlLoRA
 
 guidances = dict(
     stable_diffusion=StableDiffusionGuidance,
@@ -32,6 +34,7 @@ guidances = dict(
     point_e=PointEGuidance,
     stable_diffusion_vsd=StableDiffusionVSDGuidance,
     make_it_3d=MakeIt3DGuidance,
+    controlnet_lora=controlLoRA,
 )
 
 
